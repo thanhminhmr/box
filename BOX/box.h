@@ -12,6 +12,8 @@ typedef struct _BOX_CALLBACK_STRUCT {
 	long count;
 } BOX_CALLBACK_STRUCT;
 
+typedef void(__cdecl *BOX_CALLBACK)(struct _BOX_CALLBACK_STRUCT*);
+
 // 
 // Proto define
 
