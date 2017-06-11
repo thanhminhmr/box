@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-
 #include "box.h"
 
 void __cdecl input_proc(BOX_CALLBACK_STRUCT *input) {
