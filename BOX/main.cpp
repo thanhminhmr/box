@@ -3,7 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-#include "box.h"
+//#include "box.h"
+#include "boxbox.h"
 
 void __cdecl input_proc(BOX_CALLBACK_STRUCT *input) {
 	input->size = fread(input->buffer, sizeof(char), input->size, (FILE*) input->handle);
@@ -18,8 +19,8 @@ int main(int argc, char **argv) {
 
 	// Check arguments
 	if ((argc != 4) || ((argv[1][0] != 'c') && (argv[1][0] != 'd'))) {
-	printf("<exe> c/d <input> <output>\n");
-	return 1;
+		printf("<exe> c/d <input> <output>\n");
+		return 1;
 	}
 
 	// Get start time
@@ -46,7 +47,7 @@ int main(int argc, char **argv) {
 	output.handle = (void*) out;
 	output.buffer = outbuf;
 	output.size = 1 << 20;
-	
+
 	if (argv[1][0] == 'c') {
 		box_compress(&input, &output, mem);
 	} else {

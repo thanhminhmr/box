@@ -21,6 +21,12 @@
     <ClInclude Include="box.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="boxing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="boxbox.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
