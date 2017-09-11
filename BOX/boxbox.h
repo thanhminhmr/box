@@ -37,7 +37,7 @@ void __cdecl box_decompress(
 #ifdef NDEBUG
 
 #if defined(_MSC_VER)
-#define __inline__   __forceinline
+#define __inline__   __inline //__forceinline
 #define __noinline__ __declspec(noinline)
 #elif defined(__GNUC__)
 #define __inline__   __attribute__((always_inline))
@@ -64,7 +64,7 @@ void __cdecl box_decompress(
 #define MATCH_INC (1 << 24)
 
 #define HASH_SHIFT 6
-#define HASH_BITS (3 * HASH_SHIFT)
+#define HASH_BITS (4 * HASH_SHIFT)
 #define HASH_SIZE (1 << HASH_BITS)
 #define HASH_MASK (HASH_SIZE - 1)
 
@@ -80,7 +80,7 @@ typedef unsigned short U16;
 typedef unsigned long  U32;
 
 typedef struct _BOX_WORKMEM {
-	U32 mtbl[HASH_SIZE];
+	U32 htbl[HASH_SIZE];
 	U32 ptbl[SM_SIZE];
 } BOX_WORKMEM;
 
@@ -146,14 +146,14 @@ protected:
 	}
 
 	/* io initialize */
-	__inline__ void initialize() {
+	__inline__ void io_init() {
 		input->count = 0; // reset count
 		output->count = 0; // reset count
 		_fillbuf();
 	}
 
 	/* io finalize */
-	__inline__ void finalize() {
+	__inline__ void io_final() {
 		if (output->count != 0) {
 			_flushbuf();
 		}
@@ -171,6 +171,8 @@ class box_mkbox : public box_io {
 protected:
 	/* match table & prediction table */
 	BOX_WORKMEM *mem;
+	U32 *htbl;
+	U32 *ptbl;
 
 	/*************************************************************
 	* Encoder: Arithmetic Encoding using StateMap prediction
@@ -181,10 +183,13 @@ protected:
 
 	/* shift out identical leading bytes */
 	__inline__ void _shift_out() {
-		while ((x1 ^ x2) <= 0x00FFFFFF) {  // pass equal leading bytes of range
-			_putchr(x1 >> 24);
-			x1 <<= 8;
-			x2 = (x2 << 8) | 0xFF;
+		if ((x1 ^ x2) > 0x00FFFFFF) {
+		} else {
+			do {  // pass equal leading bytes of range
+				_putchr(x1 >> 24);
+				x1 <<= 8;
+				x2 = (x2 << 8) | 0xFF;
+			} while ((x1 ^ x2) <= 0x00FFFFFF);
 		}
 	}
 
@@ -195,8 +200,8 @@ protected:
 
 	/* Compress bit (0..1) in context cxt (0..n-1) */
 	__inline__ void code(U32 cxt, U32 bit) {
-		U32 p = mem->ptbl[cxt]; // prediction
-		mem->ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
 		U32 xmid = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		*(bit ? &x2 : &x1) = xmid + (bit ? 0 : 1);
 		//bit ? x2 = xmid : x1 = xmid + 1;
@@ -204,15 +209,15 @@ protected:
 	}
 	/* Compress bit 0 in context cxt (0..n-1) */
 	__inline__ void code_zero(U32 cxt) {
-		U32 p = mem->ptbl[cxt]; // prediction
-		mem->ptbl[cxt] += (0 << 25) - (p >> 7); // update prediction
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (0 << 25) - (p >> 7); // update prediction
 		x1 += ((x2 - x1) >> 12) * (p >> 20) + 1;
 		_shift_out();
 	}
 	/* Compress bit 1 in context cxt (0..n-1) */
 	__inline__ void code_one(U32 cxt) {
-		U32 p = mem->ptbl[cxt]; // prediction
-		mem->ptbl[cxt] += (1 << 25) - (p >> 7); // update prediction
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (1 << 25) - (p >> 7); // update prediction
 		x2 = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		_shift_out();
 	}
@@ -241,9 +246,12 @@ protected:
 	/* do compress */
 	__inline__ void compress() {
 		x1 = 0; x2 = 0xFFFFFFFF;
-		fillmem(mem->mtbl, HASH_SIZE, (U32) 0);
-		fillmem(mem->ptbl, SM_SIZE, (U32) 1 << 31);
-		initialize();
+		htbl = mem->htbl;
+		ptbl = mem->ptbl;
+
+		fillmem(htbl, HASH_SIZE, (U32) 0);
+		fillmem(ptbl, SM_SIZE, (U32) 1 << 31);
+		io_init();
 
 		U32 hash = 0, smc = 0, cxt = 0, chr;
 		while ((chr = _getchr()) <= 0xFF) {
@@ -266,9 +274,9 @@ protected:
 				code_zero(smc + 1);
 				code_lit(smc + 2, chr);
 			}
-			mem->mtbl[hash] = cxt;
+			htbl[hash] = cxt;
 			hash = (((hash * 5) << HASH_SHIFT) + chr) & HASH_MASK;
-			cxt = mem->mtbl[hash];
+			cxt = htbl[hash];
 			smc = ((chr << 4) | (cxt >> 24)) * SM_PART;
 		}
 		// mark EOF by code first match as literal
@@ -276,7 +284,7 @@ protected:
 		code_zero(smc + 1);
 		code_lit(smc + 2, cxt);
 		flush();
-		finalize();
+		io_final();
 	}
 
 public:
@@ -296,6 +304,8 @@ class box_unbox : public box_io {
 protected:
 	/* match table & prediction table */
 	BOX_WORKMEM *mem;
+	U32 *htbl;
+	U32 *ptbl;
 
 	/*************************************************************
 	* Encoder: Arithmetic Encoding using StateMap prediction
@@ -324,10 +334,10 @@ protected:
 
 	/* Compress bit (0..1) in context cxt (0..n-1) */
 	__inline__ U32 decode(U32 cxt) {
-		U32 p = mem->ptbl[cxt]; // prediction in high 25 bits
+		U32 p = ptbl[cxt]; // prediction in high 25 bits
 		U32 xmid = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		U32 bit = (x <= xmid) ? 1 : 0;
-		mem->ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
+		ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
 		*(bit ? &x2 : &x1) = xmid + (bit ? 0 : 1);
 		//bit ? x2 = xmid : x1 = xmid + 1;
 		_shift_in();
@@ -357,9 +367,12 @@ protected:
 	/* do decompress */
 	__inline__ void decompress() {
 		x1 = 0; x2 = 0xFFFFFFFF;
-		fillmem(mem->mtbl, HASH_SIZE, (U32) 0);
-		fillmem(mem->ptbl, SM_SIZE, (U32) 1 << 31);
-		initialize();
+		htbl = mem->htbl;
+		ptbl = mem->ptbl;
+
+		fillmem(htbl, HASH_SIZE, (U32) 0);
+		fillmem(ptbl, SM_SIZE, (U32) 1 << 31);
+		io_init();
 		fill_x();
 
 		U32 hash = 0, smc = 0, cxt = 0;
@@ -382,14 +395,14 @@ protected:
 				chr = (cxt >> 16) & 0xFF;
 				cxt = ((cxt << 8) & 0xFFFF00) | chr | MATCH_INC;
 			}
-			mem->mtbl[hash] = cxt;
+			htbl[hash] = cxt;
 			hash = (((hash * 5) << HASH_SHIFT) + chr) & HASH_MASK;
-			cxt = mem->mtbl[hash];
+			cxt = htbl[hash];
 			smc = ((chr << 4) | (cxt >> 24)) * SM_PART;
 			_putchr(chr);
 		}
 		// output remain buffer
-		finalize();
+		io_final();
 	}
 
 public:

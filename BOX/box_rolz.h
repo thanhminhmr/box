@@ -1,7 +1,7 @@
 #ifndef _BOX_
 #define _BOX_
 
-#include <new>
+#include <assert.h>
 
 // ----------------------------------------------------------------------------
 // Type define
@@ -61,17 +61,20 @@ void __cdecl box_decompress(
 // ----------------------------------------------------------------------------
 // Constant & configure
 
-#define MATCH_CNT 16
-#define MATCH_MAX ((MATCH_CNT - 1) << 24)
-#define MATCH_INC (1 << 24)
+#define BUFF_BITS 24
+#define BUFF_SIZE (1 << BUFF_BITS)
+#define BUFF_MASK (BUFF_SIZE - 1)
+
+#define MATCH_BIT 8
+#define MATCH_MAX (1 << MATCH_BIT)
 
 #define HASH_SHIFT 6
-#define HASH_BITS (3 * HASH_SHIFT)
+#define HASH_BITS (4 * HASH_SHIFT)
 #define HASH_SIZE (1 << HASH_BITS)
 #define HASH_MASK (HASH_SIZE - 1)
 
-#define SM_PART 258
-#define SM_SIZE (SM_PART * 256 * MATCH_CNT)
+#define SM_PART (256 + MATCH_MAX)
+#define SM_SIZE (SM_PART * 256)
 
 // ----------------------------------------------------------------------------
 // Internal typedef
@@ -81,38 +84,10 @@ typedef unsigned char  U8;
 typedef unsigned short U16;
 typedef unsigned long  U32;
 
-class Counter {
-private:
-	U16 p1;
-	U16 p2;
-public:
-	inline void init() {
-		p1 = 1 << 15;
-		p2 = 1 << 15;
-	}
-	inline U32 P() const {
-		return (U32) p1 + p2;
-	}
-	inline void Update0() {
-		p1 -= p1 >> 3;
-		p2 -= p2 >> 6;
-	}
-	inline void Update1() {
-		p1 += (p1 ^ 65535) >> 3;
-		p2 += (p2 ^ 65535) >> 6;
-	}
-	inline void Update(U32 bit) {
-		if (bit) {
-			Update1();
-		} else {
-			Update0();
-		}
-	}
-};
-
 typedef struct _BOX_WORKMEM {
-	U32 mtbl[HASH_SIZE];
-	Counter ptbl[SM_SIZE];
+	U32 htbl[HASH_SIZE];
+	U32 ptbl[SM_SIZE];
+	U8 buffer[BUFF_SIZE];
 } BOX_WORKMEM;
 
 // ----------------------------------------------------------------------------
@@ -177,14 +152,14 @@ protected:
 	}
 
 	/* io initialize */
-	__inline__ void initialize() {
+	__inline__ void io_init() {
 		input->count = 0; // reset count
 		output->count = 0; // reset count
 		_fillbuf();
 	}
 
 	/* io finalize */
-	__inline__ void finalize() {
+	__inline__ void io_final() {
 		if (output->count != 0) {
 			_flushbuf();
 		}
@@ -197,31 +172,14 @@ protected:
 };
 
 // ----------------------------------------------------------------------------
-// pconst class
-
-class box_pconst {
-protected:
-	/* get pconst */
-	__inline__ int _pconst(U32 n) {
-		/* i -> 512/(i+2) */
-		static const int box_pconst[128] = {
-			256, 170, 128, 102, 85, 73, 64, 56, 51, 46, 42, 39, 36, 34, 32, 30, 28, 26, 25,
-			24, 23, 22, 21, 20, 19, 18, 18, 17, 17, 16, 16, 15, 15, 14, 14, 13, 13, 13, 12,
-			12, 12, 11, 11, 11, 11, 10, 10, 10, 10, 10, 9, 9, 9, 9, 9, 8, 8, 8, 8, 8, 8, 8,
-			8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5,
-			5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-			4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 3 };
-
-		return box_pconst[n];
-	}
-};
-
-// ----------------------------------------------------------------------------
 // MKBOX: Compress input to output.
-class box_mkbox : public box_io, box_pconst {
+class box_mkbox : public box_io {
 protected:
 	/* match table & prediction table */
 	BOX_WORKMEM *mem;
+	U8 *buffer;
+	U32 *htbl;
+	U32 *ptbl;
 
 	/*************************************************************
 	* Encoder: Arithmetic Encoding using StateMap prediction
@@ -231,11 +189,18 @@ protected:
 	U32 x1, x2;
 
 	/* shift out identical leading bytes */
-	__inline__ void _shift_out() {
-		while ((x1 ^ x2) <= 0x00FFFFFF) {  // pass equal leading bytes of range
+	__inline__ void _shift_out_x() {
+		do {  // pass equal leading bytes of range
 			_putchr(x1 >> 24);
 			x1 <<= 8;
 			x2 = (x2 << 8) | 0xFF;
+		} while ((x1 ^ x2) <= 0x00FFFFFF);
+	}
+	/* shift out identical leading bytes */
+	__inline__ void _shift_out() {
+		if ((x1 ^ x2) >= 0x01000000) {  // pass equal leading bytes of range
+		} else {
+			_shift_out_x();
 		}
 	}
 
@@ -246,25 +211,25 @@ protected:
 
 	/* Compress bit (0..1) in context cxt (0..n-1) */
 	__inline__ void code(U32 cxt, U32 bit) {
-		U32 p = mem->ptbl[cxt].P(); // prediction
-		mem->ptbl[cxt].Update(bit);
-		U32 xmid = x1 + ((x2 - x1) >> 12) * ((p >> 5));
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
+		U32 xmid = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		*(bit ? &x2 : &x1) = xmid + (bit ? 0 : 1);
 		//bit ? x2 = xmid : x1 = xmid + 1;
 		_shift_out();
 	}
 	/* Compress bit 0 in context cxt (0..n-1) */
 	__inline__ void code_zero(U32 cxt) {
-		U32 p = mem->ptbl[cxt].P(); // prediction
-		mem->ptbl[cxt].Update0();
-		x1 += ((x2 - x1) >> 12) * ((p >> 5)) + 1;
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (0 << 25) - (p >> 7); // update prediction
+		x1 += ((x2 - x1) >> 12) * (p >> 20) + 1;
 		_shift_out();
 	}
 	/* Compress bit 1 in context cxt (0..n-1) */
 	__inline__ void code_one(U32 cxt) {
-		U32 p = mem->ptbl[cxt].P(); // prediction
-		mem->ptbl[cxt].Update1();
-		x2 = x1 + ((x2 - x1) >> 12) * ((p >> 5));
+		U32 p = ptbl[cxt]; // prediction
+		ptbl[cxt] += (1 << 25) - (p >> 7); // update prediction
+		x2 = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		_shift_out();
 	}
 
@@ -273,7 +238,8 @@ protected:
 	*/
 
 	/* code a literal */
-	__inline__ void code_lit(U32 smc, U32 chr) {
+	void code_lit(U32 smc, U32 chr) {
+		code_zero(smc);
 		// code high 4 bits in contexts cxt+1..15
 		U32 block = ((chr & 0xFF) >> 4) | 16;
 		code(smc + 1, (block >> 3) & 1);
@@ -289,47 +255,101 @@ protected:
 		code(smc + (block >> 1), block & 1);
 	}
 
+	/* code a match */
+	void code_match(U32 smc, U32 length) {
+		assert(length > 0 && length <= MATCH_MAX);
+		code_one(smc);
+		smc += 256;
+
+		if (length == 1) {
+			code_zero(smc);
+		} else {
+			U32 code_mask = 1;
+			for (U32 mask = 1; mask < length; mask += mask + 1) {
+				code_one(smc);
+				smc += code_mask;
+				code_mask += code_mask;
+			}
+			code_zero(smc);
+
+			if (code_mask < MATCH_MAX) {
+				U32 i = 1;
+				do {
+					code_mask >>= 1;
+					U32 bit = (length & code_mask) ? 1 : 0;
+					code(smc + i, bit);
+					i += i + bit;
+				} while (i <= code_mask);
+			}
+		}
+	}
+
+	/* code a eof */
+	__inline__ void code_eof(U32 smc) {
+		code_one(smc);
+		smc += 256;
+
+		for (U32 mask = 1; mask < MATCH_MAX; mask += mask) {
+			code_one(smc);
+			smc += mask;
+		}
+		code_one(smc);
+	}
+
 	/* do compress */
 	__inline__ void compress() {
 		x1 = 0; x2 = 0xFFFFFFFF;
-		fillmem(mem->mtbl, HASH_SIZE, (U32) 0);
-		for (size_t i = 0; i < SM_SIZE; i++) {
-			mem->ptbl[i].init();
-		}
-		initialize();
+		htbl = mem->htbl;
+		ptbl = mem->ptbl;
+		buffer = mem->buffer;
 
-		U32 hash = 0, smc = 0, cxt = 0, chr;
+		fillmem(buffer, BUFF_SIZE, (U8) 0);
+		fillmem(htbl, HASH_SIZE, (U32) 0);
+		fillmem(ptbl, SM_SIZE, (U32) 1 << 31);
+		io_init();
+
+		U32 bufptr = BUFF_MASK;
+		U32 hash = 0, mptr = 0, mlen = 0, smc = 0;
+
+		// current char
+		U32 chr;
 		while ((chr = _getchr()) <= 0xFF) {
-			if (chr == (cxt & 0x0000FF)) {  // match first?
-				cxt += (cxt < MATCH_MAX) ? MATCH_INC : 0;  // increment count
-				code_zero(smc);
-			} else if ((chr << 8) == (cxt & 0x00FF00)) {  // match second?
-				cxt = (cxt & 0xFF0000) | ((cxt << 8) & 0x00FF00) | chr | MATCH_INC;
-				code_one(smc);
-				code_one(smc + 1);
-				code_zero(smc + 2);
-			} else if ((chr << 16) == (cxt & 0xFF0000)) {  // match third?
-				cxt = ((cxt << 8) & 0xFFFF00) | chr | MATCH_INC;
-				code_one(smc);
-				code_one(smc + 1);
-				code_one(smc + 2);
-			} else {  // literal?
-				cxt = ((cxt << 8) & 0xFFFF00) | chr;
-				code_one(smc);
-				code_zero(smc + 1);
-				code_lit(smc + 2, chr);
+			// lastchar == buffer[bufptr]
+			if ((mlen == MATCH_MAX) || ((mlen != 0) && (buffer[mptr] != chr))) {
+				// case match full
+				// case match stop
+				code_match(smc, mlen);
+				mlen = 0;
 			}
-			mem->mtbl[hash] = cxt;
+			if (mlen == 0) {
+				// case last match not exist
+				smc = buffer[bufptr] * SM_PART;
+				mptr = htbl[hash];
+			}
+			if (buffer[mptr] == chr) {
+				// case start match & continue match
+				mlen++;
+				mptr = (mptr + 1) & BUFF_MASK;
+			} else {
+				// case literal
+				code_lit(smc, chr);
+			}
+
+			bufptr = (bufptr + 1) & BUFF_MASK;
+			htbl[hash] = bufptr;
 			hash = (((hash * 5) << HASH_SHIFT) + chr) & HASH_MASK;
-			cxt = mem->mtbl[hash];
-			smc = ((chr << 4) | (cxt >> 24)) * SM_PART;
+			buffer[bufptr] = (U8) chr;
 		}
-		// mark EOF by code first match as literal
-		code_one(smc);
-		code_zero(smc + 1);
-		code_lit(smc + 2, cxt);
+		// mark EOF
+		if (mlen != 0) {
+			code_match(smc, mlen);
+			smc = buffer[bufptr] * SM_PART;
+			mptr = htbl[hash];
+		}
+		code_eof(smc);
+		// finalize
 		flush();
-		finalize();
+		io_final();
 	}
 
 public:
@@ -345,7 +365,7 @@ public:
 
 // ----------------------------------------------------------------------------
 // UNBOX: Decompress input to output.
-class box_unbox : public box_io, box_pconst {
+class box_unbox : public box_io {
 protected:
 	/* match table & prediction table */
 	BOX_WORKMEM *mem;
@@ -377,10 +397,10 @@ protected:
 
 	/* Compress bit (0..1) in context cxt (0..n-1) */
 	__inline__ U32 decode(U32 cxt) {
-		U32 p = mem->ptbl[cxt].P(); // prediction in high 25 bits
-		U32 xmid = x1 + ((x2 - x1) >> 12) * ((p >> 5));
+		U32 p = mem->ptbl[cxt]; // prediction in high 25 bits
+		U32 xmid = x1 + ((x2 - x1) >> 12) * (p >> 20);
 		U32 bit = (x <= xmid) ? 1 : 0;
-		mem->ptbl[cxt].Update(bit);
+		mem->ptbl[cxt] += (bit << 25) - (p >> 7); // update prediction
 		*(bit ? &x2 : &x1) = xmid + (bit ? 0 : 1);
 		//bit ? x2 = xmid : x1 = xmid + 1;
 		_shift_in();
@@ -410,41 +430,24 @@ protected:
 	/* do decompress */
 	__inline__ void decompress() {
 		x1 = 0; x2 = 0xFFFFFFFF;
-		fillmem(mem->mtbl, HASH_SIZE, (U32) 0);
-		for (size_t i = 0; i < SM_SIZE; i++) {
-			mem->ptbl[i].init();
-		}
-		initialize();
+		fillmem(mem->htbl, HASH_SIZE, (U32) 0);
+		fillmem(mem->ptbl, SM_SIZE, (U32) 1 << 31);
+		io_init();
 		fill_x();
 
-		U32 hash = 0, smc = 0, cxt = 0;
+		U32 hash = 0, smc = 0, cxt = 0, chr;
 		while (1) {
-			U32 chr;
-			if (decode(smc) == 0) { // match first?
-				chr = cxt & 0xFF;
-				cxt += (cxt < MATCH_MAX) ? MATCH_INC : 0; // increment count
-			} else if (decode(smc + 1) == 0) { // literal?
-				chr = decode_lit(smc + 2);
-				if (chr != (cxt & 0xFF)) {
-					cxt = ((cxt << 8) & 0xFFFF00) | chr;
-				} else {
-					break;
-				}
-			} else if (decode(smc + 2) == 0) { // match second?
-				chr = (cxt >> 8) & 0xFF;
-				cxt = (cxt & 0xFF0000) | ((cxt << 8) & 0x00FF00) | chr | MATCH_INC;
-			} else { // match third?
-				chr = (cxt >> 16) & 0xFF;
-				cxt = ((cxt << 8) & 0xFFFF00) | chr | MATCH_INC;
-			}
-			mem->mtbl[hash] = cxt;
+
+
+
+			mem->htbl[hash] = cxt;
 			hash = (((hash * 5) << HASH_SHIFT) + chr) & HASH_MASK;
-			cxt = mem->mtbl[hash];
+			cxt = mem->htbl[hash];
 			smc = ((chr << 4) | (cxt >> 24)) * SM_PART;
 			_putchr(chr);
 		}
 		// output remain buffer
-		finalize();
+		io_final();
 	}
 
 public:
