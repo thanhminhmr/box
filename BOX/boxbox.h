@@ -59,11 +59,13 @@ void __cdecl box_decompress(
 // ----------------------------------------------------------------------------
 // Constant & configure
 
-#define MATCH_CNT 16
-#define MATCH_MAX ((MATCH_CNT - 1) << 24)
-#define MATCH_INC (1 << 24)
+#define MATCH_SHIFT 24
+#define MATCH_BITS 4
+#define MATCH_CNT (1 << MATCH_BITS)
+#define MATCH_MAX ((MATCH_CNT - 1) << MATCH_SHIFT)
+#define MATCH_INC (1 << MATCH_SHIFT)
 
-#define HASH_SHIFT 6
+#define HASH_SHIFT 5
 #define HASH_BITS (4 * HASH_SHIFT)
 #define HASH_SIZE (1 << HASH_BITS)
 #define HASH_MASK (HASH_SIZE - 1)
@@ -398,7 +400,7 @@ protected:
 			htbl[hash] = cxt;
 			hash = (((hash * 5) << HASH_SHIFT) + chr) & HASH_MASK;
 			cxt = htbl[hash];
-			smc = ((chr << 4) | (cxt >> 24)) * SM_PART;
+			smc = ((chr << MATCH_BITS) | (cxt >> MATCH_SHIFT)) * SM_PART;
 			_putchr(chr);
 		}
 		// output remain buffer

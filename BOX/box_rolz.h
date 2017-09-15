@@ -65,10 +65,10 @@ void __cdecl box_decompress(
 #define BUFF_SIZE (1 << BUFF_BITS)
 #define BUFF_MASK (BUFF_SIZE - 1)
 
-#define MATCH_BIT 8
-#define MATCH_MAX (1 << MATCH_BIT)
+#define MATCH_BITS 8
+#define MATCH_MAX (1 << MATCH_BITS)
 
-#define HASH_SHIFT 6
+#define HASH_SHIFT 5 // 5 or 6
 #define HASH_BITS (4 * HASH_SHIFT)
 #define HASH_SIZE (1 << HASH_BITS)
 #define HASH_MASK (HASH_SIZE - 1)

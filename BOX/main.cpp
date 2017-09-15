@@ -4,8 +4,10 @@
 #include <stdlib.h>
 #include <time.h>
 //#include "box.h"
-#include "boxbox.h"
+//#include "boxbox.h"
 //#include "box_rolz.h"
+#include "box_rolz_lookback.h"
+//#include "fastbox.h"
 // /USEPROFILE
 void __cdecl input_proc(BOX_CALLBACK_STRUCT *input) {
 	input->size = fread(input->buffer, sizeof(char), input->size, (FILE*) input->handle);
