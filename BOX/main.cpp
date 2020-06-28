@@ -1,16 +1,14 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include "..\BoxDll\box.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
-//#include "box.h"
-//#include "boxbox.h"
-//#include "box_rolz.h"
-#include "box_rolz_lookback.h"
-//#include "fastbox.h"
+
 // /USEPROFILE
 void __cdecl input_proc(BOX_CALLBACK_STRUCT *input) {
-	input->size = fread(input->buffer, sizeof(char), input->size, (FILE*) input->handle);
+	input->size = (unsigned long) fread(input->buffer, sizeof(char), input->size, (FILE*) input->handle);
 }
 
 void __cdecl output_proc(BOX_CALLBACK_STRUCT *output) {
@@ -18,7 +16,7 @@ void __cdecl output_proc(BOX_CALLBACK_STRUCT *output) {
 }
 
 // User interface.  Args are input and output file.
-int main(int argc, char **argv) {
+int _cdecl main(int argc, char **argv) {
 
 	// Check arguments
 	if ((argc != 4) || ((argv[1][0] != 'c') && (argv[1][0] != 'd'))) {
@@ -63,7 +61,7 @@ int main(int argc, char **argv) {
 
 	// Report result
 	printf("%ld -> %ld in %1.2f sec.\n",
-		ftell(in), ftell(out), double(clock() - start) / CLOCKS_PER_SEC);
+		ftell(in), ftell(out), float(clock() - start) / CLOCKS_PER_SEC);
 
 	fclose(in);
 	fclose(out);
